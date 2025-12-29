@@ -1,0 +1,720 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Bild Puzzle</title>
+
+<style>
+  :root{
+    --bg:#0b0b0b;
+    --fg:#e7e7e7;
+    --accent:#00ff99;
+    --tile:90px;
+    --gap:4px;
+    --border:#000;
+  }
+
+  body{
+    margin:0;
+    background: var(--bg);
+    color: var(--fg);
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+    display:flex;
+    justify-content:center;
+    align-items:center;
+    min-height:100vh;
+    overflow:hidden;
+  }
+
+  /* ===== CRT WRAPPER ===== */
+  .crt-shell{
+    position:relative;
+    padding: 18px 18px 16px;
+    border-radius: 18px;
+    background: radial-gradient(120% 120% at 50% 10%, #1b1b1b 0%, #0e0e0e 60%, #070707 100%);
+    box-shadow:
+      0 30px 80px rgba(0,0,0,.65),
+      inset 0 0 0 2px rgba(255,255,255,.06),
+      inset 0 0 40px rgba(0,0,0,.55);
+  }
+
+  .crt-screen{
+    position:relative;
+    border-radius: 14px;
+    padding: 18px;
+    background: #0f0f0f;
+    box-shadow:
+      inset 0 0 0 2px rgba(255,255,255,.04),
+      inset 0 0 24px rgba(0,0,0,.65);
+    transform: translateZ(0);
+  }
+
+  .shake{ animation: shake 120ms linear; }
+  @keyframes shake{
+    0% { transform: translate(0,0); }
+    20%{ transform: translate(-2px,1px); }
+    40%{ transform: translate(2px,-1px); }
+    60%{ transform: translate(-1px,-2px); }
+    80%{ transform: translate(2px,2px); }
+    100%{ transform: translate(0,0); }
+  }
+
+  /* CRT scanlines + subtle flicker */
+  .crt-screen::before{
+    content:"";
+    pointer-events:none;
+    position:absolute; inset:0;
+    border-radius: 14px;
+    background:
+      repeating-linear-gradient(
+        to bottom,
+        rgba(0,0,0,0.20) 0px,
+        rgba(0,0,0,0.20) 1px,
+        rgba(255,255,255,0.02) 2px,
+        rgba(0,0,0,0.00) 4px
+      );
+    mix-blend-mode: overlay;
+    opacity: .55;
+  }
+  .crt-screen::after{
+    content:"";
+    pointer-events:none;
+    position:absolute; inset:0;
+    border-radius: 14px;
+    background: radial-gradient(120% 90% at 50% 10%, rgba(0,255,153,.10), rgba(0,0,0,0) 60%);
+    animation: flicker 2.4s infinite;
+    opacity:.8;
+  }
+  @keyframes flicker{
+    0%,100%{ opacity:.7; }
+    50%{ opacity:.9; }
+    52%{ opacity:.75; }
+    58%{ opacity:.88; }
+  }
+
+  /* ===== GAME LAYOUT ===== */
+  .game{
+    text-align:center;
+    position:relative;
+    min-width: calc(6 * var(--tile) + 5 * var(--gap) + 40px);
+  }
+
+  .grid{
+    display:grid;
+    grid-template-columns: repeat(6, var(--tile));
+    grid-template-rows: repeat(6, var(--tile));
+    gap: var(--gap);
+    margin: 10px auto 14px;
+    justify-content:center;
+  }
+
+  .tile{
+    width: var(--tile);
+    height: var(--tile);
+    background-size: calc(6 * var(--tile)) calc(6 * var(--tile));
+    border: 2px solid var(--border);
+    cursor:pointer;
+    user-select:none;
+    border-radius: 6px;
+    box-shadow: inset 0 0 0 1px rgba(255,255,255,.05);
+  }
+
+  .tile.selected{
+    outline: 3px solid #ffd400;
+    outline-offset: 1px;
+  }
+
+  .win{
+    display:none;
+    font-size: 18px;
+    margin: 10px 0 10px;
+  }
+  .win a{
+    color: var(--accent);
+    text-decoration:none;
+    font-weight:800;
+  }
+  .win a:hover{ text-decoration: underline; }
+
+  .controls{
+    display:flex;
+    gap:10px;
+    justify-content:center;
+    align-items:center;
+    margin-top: 6px;
+    flex-wrap: wrap;
+  }
+
+  button{
+    font-family: inherit;
+    padding: 9px 14px;
+    border-radius: 10px;
+    border: 1px solid rgba(255,255,255,.12);
+    background: rgba(255,255,255,.05);
+    color: var(--fg);
+    cursor:pointer;
+  }
+  button:hover{ background: rgba(255,255,255,.08); }
+
+  .hint{
+    font-size: 12px;
+    opacity:.75;
+    margin-top: 8px;
+  }
+
+  /* ===== START SCREEN OVERLAY ===== */
+  .overlay{
+    position:absolute;
+    inset: 0;
+    display:flex;
+    justify-content:center;
+    align-items:center;
+    border-radius: 10px;
+    background: rgba(0,0,0,.65);
+    backdrop-filter: blur(2px);
+  }
+  .overlay.hidden{ display:none; }
+
+  .start-card{
+    width:min(520px, 92vw);
+    border-radius: 16px;
+    padding: 18px 18px 16px;
+    background: radial-gradient(120% 120% at 50% 10%, rgba(0,255,153,.10), rgba(255,255,255,.04) 40%, rgba(0,0,0,.0) 100%),
+                rgba(10,10,10,.85);
+    border: 1px solid rgba(255,255,255,.10);
+    box-shadow: 0 20px 60px rgba(0,0,0,.6);
+  }
+
+  .logo{
+    font-weight:900;
+    letter-spacing: 2px;
+    font-size: 28px;
+    margin-bottom: 6px;
+    text-transform: uppercase;
+  }
+  .sub{
+    opacity:.8;
+    font-size: 13px;
+    margin-bottom: 14px;
+  }
+
+  .press{
+    display:inline-block;
+    margin: 10px 0 14px;
+    padding: 8px 12px;
+    border-radius: 999px;
+    border: 1px dashed rgba(255,255,255,.20);
+    opacity:.9;
+    animation: blink 1.1s steps(2, end) infinite;
+  }
+  @keyframes blink{
+    0%, 49% { opacity: .15; }
+    50%, 100% { opacity: .95; }
+  }
+
+  .start-actions{
+    display:flex;
+    gap:10px;
+    justify-content:center;
+    flex-wrap:wrap;
+  }
+
+  .primary{
+    border: 1px solid rgba(0,255,153,.35);
+    background: rgba(0,255,153,.10);
+  }
+  .primary:hover{ background: rgba(0,255,153,.14); }
+
+  @media (max-width: 680px){
+    :root{ --tile: 52px; --gap: 3px; }
+    .game{ min-width: auto; }
+  }
+</style>
+</head>
+
+<body>
+  <div class="crt-shell">
+    <div class="crt-screen" id="screen">
+      <div class="game" id="game">
+        <div class="grid" id="grid"></div>
+
+        <div class="win" id="win">
+          <a href="https://hof-keil.de/products/offenes-beef-tasting?variant=55692879987032"
+             target="_blank" rel="noopener">
+            Hier klicken, um deinen Gewinn zu sehen!
+          </a>
+        </div>
+
+        <div class="controls">
+          <button id="shuffleBtn">Neu mischen</button>
+          <button id="solveBtn">Puzzle lösen</button>
+          <button id="sfxBtn">SFX: An</button>
+          <button id="musicBtn">Musik: An</button>
+        </div>
+        <div class="hint">Tipp: Klicke zwei Teile, um sie zu tauschen.</div>
+
+        <!-- Startscreen Overlay -->
+        <div class="overlay" id="overlay">
+          <div class="start-card">
+            <div class="logo">PUZZLE BOY</div>
+            <div class="sub">Ein 6×6 Bildpuzzle im Retro-Look</div>
+            <div class="press">PRESS START</div>
+            <div class="start-actions">
+              <button class="primary" id="startBtn">Start</button>
+              <button id="howBtn">Steuerung</button>
+            </div>
+            <div class="hint" id="howText" style="display:none; margin-top:10px;">
+              Klicke zwei Teile zum Tauschen. Ziel: Bild korrekt zusammensetzen.
+            </div>
+          </div>
+        </div>
+
+      </div>
+    </div>
+  </div>
+
+  <!-- Diese Datei soll ERST BEI GEWINN starten -->
+  <audio id="bgm" src="musik.mp3" loop></audio>
+
+<script>
+  const SIZE = 6;
+  const IMAGE_SRC = "bild.png";
+
+  const grid = document.getElementById("grid");
+  const winBox = document.getElementById("win");
+  const bgm = document.getElementById("bgm");
+  const screen = document.getElementById("screen");
+
+  const overlay = document.getElementById("overlay");
+  const startBtn = document.getElementById("startBtn");
+  const howBtn = document.getElementById("howBtn");
+  const howText = document.getElementById("howText");
+
+  const shuffleBtn = document.getElementById("shuffleBtn");
+  const solveBtn = document.getElementById("solveBtn");
+  const sfxBtn = document.getElementById("sfxBtn");
+  const musicBtn = document.getElementById("musicBtn");
+
+  // Tile size derived from CSS var --tile (responsive)
+  function getTileSizePx(){
+    const v = getComputedStyle(document.documentElement).getPropertyValue("--tile").trim();
+    return parseInt(v.replace("px",""), 10);
+  }
+
+  bgm.volume = 0.5;
+
+  let tiles = [];
+  let selected = null;
+  let gameWon = false;
+
+  // Audio state
+  let audioCtx = null;
+  let sfxEnabled = true;
+  let musicEnabled = true;
+
+  // Puzzle music engine state
+  let puzzleMusicPlaying = false;
+  let puzzleMusicTimer = null;
+  let puzzleMusicStartT = 0;
+  let puzzleMusicStep = 0;
+
+  // Master/music buses
+  let masterGain = null;
+  let musicGain = null;
+  let sfxGain = null;
+
+  function ensureAudio(){
+    if (!audioCtx){
+      audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      masterGain = audioCtx.createGain();
+      musicGain = audioCtx.createGain();
+      sfxGain = audioCtx.createGain();
+
+      masterGain.gain.value = 0.9;
+      musicGain.gain.value = 0.55;
+      sfxGain.gain.value = 1.0;
+
+      musicGain.connect(masterGain);
+      sfxGain.connect(masterGain);
+      masterGain.connect(audioCtx.destination);
+    }
+    if (audioCtx.state === "suspended") audioCtx.resume().catch(()=>{});
+  }
+
+  function shake(ms = 120){
+    screen.classList.remove("shake");
+    void screen.offsetWidth;
+    screen.classList.add("shake");
+    setTimeout(()=> screen.classList.remove("shake"), ms);
+  }
+
+  /* ====== SFX (GameBoy-ish) ====== */
+  function playBeep(freq, duration = 0.06, type = "square", vol = 0.14){
+    if (!sfxEnabled) return;
+    ensureAudio();
+
+    const t0 = audioCtx.currentTime;
+    const osc = audioCtx.createOscillator();
+    const gain = audioCtx.createGain();
+
+    osc.type = type;
+    osc.frequency.setValueAtTime(freq, t0);
+
+    gain.gain.setValueAtTime(vol, t0);
+    gain.gain.exponentialRampToValueAtTime(0.001, t0 + duration);
+
+    osc.connect(gain);
+    gain.connect(sfxGain);
+
+    osc.start(t0);
+    osc.stop(t0 + duration);
+  }
+
+  function clickSfx(){
+    playBeep(950, 0.03, "square", 0.11);
+    setTimeout(()=> playBeep(700, 0.03, "square", 0.08), 20);
+  }
+
+  function swapSfx(){
+    playBeep(420, 0.07, "square", 0.12);
+  }
+
+  function winJingle(){
+    if (!sfxEnabled) return;
+    const seq = [
+      {f: 880, d: 0.09},
+      {f: 1175, d: 0.09},
+      {f: 1568, d: 0.12},
+      {f: 2093, d: 0.16}
+    ];
+    let t = 0;
+    for (const n of seq){
+      setTimeout(()=> playBeep(n.f, n.d, "square", 0.16), t);
+      t += Math.round(n.d * 1000) + 40;
+    }
+  }
+
+  /* ====== Puzzle-Background-Music (original chiptune) ======
+     Simple 90s handheld puzzle vibe: square lead + triangle bass + soft noise hats.
+  */
+  function playNote(when, freq, dur, type, vol){
+    if (!musicEnabled) return;
+
+    const osc = audioCtx.createOscillator();
+    const gain = audioCtx.createGain();
+
+    osc.type = type;
+    osc.frequency.setValueAtTime(freq, when);
+
+    gain.gain.setValueAtTime(vol, when);
+    gain.gain.exponentialRampToValueAtTime(0.001, when + dur);
+
+    osc.connect(gain);
+    gain.connect(musicGain);
+
+    osc.start(when);
+    osc.stop(when + dur);
+  }
+
+  // Short noise burst (hi-hat)
+  function playHat(when, dur = 0.02, vol = 0.03){
+    if (!musicEnabled) return;
+
+    // Create a short noise buffer
+    const bufferSize = Math.floor(audioCtx.sampleRate * dur);
+    const buffer = audioCtx.createBuffer(1, bufferSize, audioCtx.sampleRate);
+    const data = buffer.getChannelData(0);
+    for (let i = 0; i < bufferSize; i++){
+      data[i] = (Math.random() * 2 - 1) * (1 - i / bufferSize);
+    }
+
+    const src = audioCtx.createBufferSource();
+    src.buffer = buffer;
+
+    const hp = audioCtx.createBiquadFilter();
+    hp.type = "highpass";
+    hp.frequency.setValueAtTime(6000, when);
+
+    const gain = audioCtx.createGain();
+    gain.gain.setValueAtTime(vol, when);
+    gain.gain.exponentialRampToValueAtTime(0.001, when + dur);
+
+    src.connect(hp);
+    hp.connect(gain);
+    gain.connect(musicGain);
+
+    src.start(when);
+    src.stop(when + dur);
+  }
+
+  function startPuzzleMusic(){
+    ensureAudio();
+    if (puzzleMusicPlaying || !musicEnabled) return;
+
+    puzzleMusicPlaying = true;
+    puzzleMusicStep = 0;
+    puzzleMusicStartT = audioCtx.currentTime + 0.03;
+
+    // 60 BPM, 16 steps = 1 bar of 4/4 with 16th notes
+    const bpm = 60;
+    const stepDur = (60 / bpm) / 4; // 16th note duration
+    const lookahead = 0.12;         // schedule ahead seconds
+    const intervalMs = 25;
+
+    // Patterns (16 steps)
+    // Scale: C major-ish (puzzle-friendly)
+    const lead = [ 523.25, 659.25, 783.99, 659.25, 587.33, 659.25, 783.99, 659.25,
+                   523.25, 587.33, 659.25, 587.33, 493.88, 587.33, 659.25, 587.33 ];
+    const bass = [ 130.81, 0, 130.81, 0, 146.83, 0, 146.83, 0,
+                   130.81, 0, 164.81, 0, 146.83, 0, 146.83, 0 ];
+    const hats = [1,0,1,0, 1,0,1,0, 1,0,1,0, 1,0,1,0];
+
+    function scheduler(){
+      if (!puzzleMusicPlaying) return;
+
+      const now = audioCtx.currentTime;
+      while (puzzleMusicStartT + puzzleMusicStep * stepDur < now + lookahead){
+        const t = puzzleMusicStartT + puzzleMusicStep * stepDur;
+        const i = puzzleMusicStep % 16;
+
+        // lead: short, plucky square
+        const lf = lead[i];
+        playNote(t, lf, stepDur * 0.85, "square", 0.045);
+
+        // bass: triangle-ish (sine works too; triangle is fine here)
+        const bf = bass[i];
+        if (bf > 0) playNote(t, bf, stepDur * 1.8, "triangle", 0.032);
+
+        // hats: tiny noise
+        if (hats[i]) playHat(t, 0.018, 0.020);
+
+        puzzleMusicStep++;
+      }
+    }
+
+    puzzleMusicTimer = setInterval(scheduler, intervalMs);
+    scheduler();
+  }
+
+  function stopPuzzleMusic(){
+    puzzleMusicPlaying = false;
+    if (puzzleMusicTimer){
+      clearInterval(puzzleMusicTimer);
+      puzzleMusicTimer = null;
+    }
+  }
+
+  function startWinMp3(){
+    // Starts ONLY at win (after user gesture already happened)
+    bgm.currentTime = 0;
+    bgm.play().catch(()=>{});
+  }
+
+  function stopWinMp3(){
+    bgm.pause();
+    bgm.currentTime = 0;
+  }
+
+  /* ====== Game logic ====== */
+  function buildBoard(){
+    winBox.style.display = "none";
+    grid.innerHTML = "";
+    selected = null;
+    gameWon = false;
+
+    tiles = [];
+    for (let i = 0; i < SIZE * SIZE; i++) tiles.push(i);
+    shuffle(tiles);
+
+    const TILE = getTileSizePx();
+
+    tiles.forEach((pos, index) => {
+      const tile = document.createElement("div");
+      tile.className = "tile";
+      tile.dataset.correct = index.toString();
+      tile.dataset.current = pos.toString();
+
+      const x = pos % SIZE;
+      const y = Math.floor(pos / SIZE);
+
+      tile.style.backgroundImage = `url(${IMAGE_SRC})`;
+      tile.style.backgroundPosition = `-${x * TILE}px -${y * TILE}px`;
+
+      tile.addEventListener("click", () => onTileClick(tile));
+      grid.appendChild(tile);
+    });
+  }
+
+  function onTileClick(tile){
+    if (gameWon) return;
+
+    // user gesture => allow audio
+    ensureAudio();
+
+    // During game: puzzle music (NOT musik.mp3)
+    if (!puzzleMusicPlaying) startPuzzleMusic();
+
+    clickSfx();
+
+    if (!selected){
+      selected = tile;
+      tile.classList.add("selected");
+      return;
+    }
+
+    if (selected === tile){
+      tile.classList.remove("selected");
+      selected = null;
+      return;
+    }
+
+    swapTiles(selected, tile);
+    selected.classList.remove("selected");
+    selected = null;
+
+    swapSfx();
+    shake(110);
+
+    checkWin();
+  }
+
+  function swapTiles(a, b){
+    const tmpPos = a.style.backgroundPosition;
+    const tmpCur = a.dataset.current;
+
+    a.style.backgroundPosition = b.style.backgroundPosition;
+    a.dataset.current = b.dataset.current;
+
+    b.style.backgroundPosition = tmpPos;
+    b.dataset.current = tmpCur;
+  }
+
+  function checkWin(){
+    const all = document.querySelectorAll(".tile");
+    let win = true;
+    for (const tile of all){
+      if (tile.dataset.current !== tile.dataset.correct){
+        win = false; break;
+      }
+    }
+    if (win){
+      gameWon = true;
+      winBox.style.display = "block";
+
+      // Stop puzzle chiptune, play win jingle, then start musik.mp3
+      stopPuzzleMusic();
+      winJingle();
+      shake(180);
+
+      setTimeout(() => {
+        // Now start the user's track only at the end
+        startWinMp3();
+      }, 450);
+    }
+  }
+
+  function shuffle(arr){
+    for (let i = arr.length - 1; i > 0; i--){
+      const j = Math.floor(Math.random() * (i + 1));
+      [arr[i], arr[j]] = [arr[j], arr[i]];
+    }
+  }
+
+  /* ====== SOLVE BUTTON (new) ====== */
+  function solvePuzzleInstantly(){
+    if (gameWon) return;
+
+    ensureAudio();
+
+    const TILE = getTileSizePx();
+    const all = document.querySelectorAll(".tile");
+
+    all.forEach((tile, index) => {
+      const correctPos = index;
+      const x = correctPos % SIZE;
+      const y = Math.floor(correctPos / SIZE);
+
+      tile.dataset.current = correctPos.toString();
+      tile.style.backgroundPosition = `-${x * TILE}px -${y * TILE}px`;
+      tile.classList.remove("selected");
+    });
+
+    selected = null;
+
+    // Trigger same win behavior
+    checkWin();
+  }
+
+  /* ====== UI ====== */
+  startBtn.addEventListener("click", () => {
+    ensureAudio();
+    // Start playing puzzle music right away on start
+    if (musicEnabled) startPuzzleMusic();
+    overlay.classList.add("hidden");
+    stopWinMp3();
+    buildBoard();
+    shake(120);
+  });
+
+  howBtn.addEventListener("click", () => {
+    ensureAudio();
+    clickSfx();
+    howText.style.display = (howText.style.display === "none") ? "block" : "none";
+  });
+
+  shuffleBtn.addEventListener("click", () => {
+    ensureAudio();
+    clickSfx();
+    stopWinMp3();
+    // If user shuffles mid-game, keep puzzle music
+    if (musicEnabled) startPuzzleMusic();
+    buildBoard();
+    shake(140);
+  });
+
+  solveBtn.addEventListener("click", () => {
+    // optional little feedback
+    clickSfx();
+    shake(120);
+    solvePuzzleInstantly();
+  });
+
+  sfxBtn.addEventListener("click", () => {
+    ensureAudio();
+    sfxEnabled = !sfxEnabled;
+    sfxBtn.textContent = sfxEnabled ? "SFX: An" : "SFX: Aus";
+    // tiny feedback only if enabled
+    if (sfxEnabled) clickSfx();
+  });
+
+  musicBtn.addEventListener("click", () => {
+    ensureAudio();
+    musicEnabled = !musicEnabled;
+    musicBtn.textContent = musicEnabled ? "Musik: An" : "Musik: Aus";
+
+    if (!musicEnabled){
+      stopPuzzleMusic();
+      stopWinMp3();
+    } else {
+      // if already playing (in game), restart puzzle music; if won, keep mp3 off unless won again
+      if (overlay.classList.contains("hidden") && !gameWon){
+        startPuzzleMusic();
+      }
+      clickSfx();
+    }
+  });
+
+  window.addEventListener("resize", () => {
+    // Rebuild board on resize during gameplay (simple solution)
+    if (overlay.classList.contains("hidden") && grid.children.length && !gameWon){
+      buildBoard();
+    }
+  });
+
+  // Initial state: startscreen active, no music yet
+  stopPuzzleMusic();
+  stopWinMp3();
+</script>
+</body>
+</html>
