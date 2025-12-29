@@ -158,6 +158,11 @@
   }
   button:hover{ background: rgba(255,255,255,.08); }
 
+  button[disabled]{
+    opacity:.45;
+    cursor:not-allowed;
+  }
+
   .hint{
     font-size: 12px;
     opacity:.75;
@@ -185,6 +190,7 @@
                 rgba(10,10,10,.85);
     border: 1px solid rgba(255,255,255,.10);
     box-shadow: 0 20px 60px rgba(0,0,0,.6);
+    position:relative;
   }
 
   .logo{
@@ -197,12 +203,12 @@
   .sub{
     opacity:.8;
     font-size: 13px;
-    margin-bottom: 14px;
+    margin-bottom: 12px;
   }
 
   .press{
     display:inline-block;
-    margin: 10px 0 14px;
+    margin: 10px 0 10px;
     padding: 8px 12px;
     border-radius: 999px;
     border: 1px dashed rgba(255,255,255,.20);
@@ -226,6 +232,20 @@
     background: rgba(0,255,153,.10);
   }
   .primary:hover{ background: rgba(0,255,153,.14); }
+
+  /* iOS-like "Tap to enable sound" banner */
+  .soundgate{
+    display:none;
+    margin-top: 12px;
+    padding: 10px 12px;
+    border-radius: 12px;
+    border: 1px solid rgba(0,255,153,.25);
+    background: rgba(0,255,153,.08);
+    font-size: 12px;
+    line-height: 1.35;
+  }
+  .soundgate strong{ font-weight:900; }
+  .soundgate.show{ display:block; }
 
   @media (max-width: 680px){
     :root{ --tile: 52px; --gap: 3px; }
@@ -260,13 +280,20 @@
           <div class="start-card">
             <div class="logo">PUZZLE BOY</div>
             <div class="sub">Ein 6×6 Bildpuzzle im Retro-Look</div>
-            <div class="press">PRESS START</div>
+            <div class="press" id="pressText">TAP TO ENABLE SOUND</div>
+
             <div class="start-actions">
-              <button class="primary" id="startBtn">Start</button>
-              <button id="howBtn">Steuerung</button>
+              <button class="primary" id="startBtn" disabled>Start</button>
+              <button id="howBtn" disabled>Steuerung</button>
             </div>
+
             <div class="hint" id="howText" style="display:none; margin-top:10px;">
               Klicke zwei Teile zum Tauschen. Ziel: Bild korrekt zusammensetzen.
+            </div>
+
+            <div class="soundgate show" id="soundGate">
+              <strong>iPhone/iPad Hinweis:</strong><br/>
+              Tippe einmal irgendwo, um Ton zu aktivieren.
             </div>
           </div>
         </div>
@@ -297,6 +324,9 @@
   const sfxBtn = document.getElementById("sfxBtn");
   const musicBtn = document.getElementById("musicBtn");
 
+  const soundGate = document.getElementById("soundGate");
+  const pressText = document.getElementById("pressText");
+
   // Tile size derived from CSS var --tile (responsive)
   function getTileSizePx(){
     const v = getComputedStyle(document.documentElement).getPropertyValue("--tile").trim();
@@ -325,6 +355,10 @@
   let musicGain = null;
   let sfxGain = null;
 
+  // iOS-like gating
+  let audioUnlocked = false;
+  let winTapFallbackArmed = false;
+
   function ensureAudio(){
     if (!audioCtx){
       audioCtx = new (window.AudioContext || window.webkitAudioContext)();
@@ -341,47 +375,6 @@
       masterGain.connect(audioCtx.destination);
     }
     if (audioCtx.state === "suspended") audioCtx.resume().catch(()=>{});
-  }
-
-  /* ====== iOS Audio Unlock Improvements (new) ====== */
-  async function unlockIOSAudio(){
-    ensureAudio();
-
-    // 1) AudioContext zuverlässig aktivieren
-    try { await audioCtx.resume(); } catch(e) {}
-
-    // 2) Ultra-leiser kurzer Ping
-    try {
-      const t0 = audioCtx.currentTime;
-      const osc = audioCtx.createOscillator();
-      const g = audioCtx.createGain();
-      osc.type = "square";
-      osc.frequency.setValueAtTime(440, t0);
-      g.gain.setValueAtTime(0.0001, t0);
-      g.gain.exponentialRampToValueAtTime(0.00001, t0 + 0.02);
-      osc.connect(g);
-      g.connect(audioCtx.destination);
-      osc.start(t0);
-      osc.stop(t0 + 0.02);
-    } catch(e) {}
-
-    // 3) MP3 "primen": einmal stumm play() -> pause()
-    try {
-      const prevMuted = bgm.muted;
-      const prevVol = bgm.volume;
-
-      bgm.muted = true;
-      bgm.volume = 0;
-
-      await bgm.play();
-      bgm.pause();
-      bgm.currentTime = 0;
-
-      bgm.muted = prevMuted;
-      bgm.volume = prevVol;
-    } catch(e) {
-      // Wenn iOS es trotzdem blockt, versuchen wir es beim nächsten Tap erneut.
-    }
   }
 
   function shake(ms = 120){
@@ -437,9 +430,51 @@
     }
   }
 
-  /* ====== Puzzle-Background-Music (original chiptune) ======
-     Simple 90s handheld puzzle vibe: square lead + triangle bass + soft noise hats.
+  /* ====== iOS Audio Unlock (perfect iOS-like) ======
+     - first tap anywhere on overlay enables audio and starts puzzle music
+     - Start/How buttons disabled until audio unlocked
+     - audible "unlock beep" so users immediately know sound is on
+     - mp3 primed for later play on win
   */
+  async function unlockIOSAudioPerfect(){
+    ensureAudio();
+
+    // 1) AudioContext zuverlässig aktivieren
+    try { await audioCtx.resume(); } catch(e) {}
+
+    // 2) Audible unlock beep (leise, aber hörbar)
+    try {
+      playBeep(880, 0.05, "square", 0.08);
+      setTimeout(()=> playBeep(1175, 0.05, "square", 0.06), 70);
+    } catch(e) {}
+
+    // 3) MP3 "primen": einmal kurz play() -> pause() (stumm, damit man nichts hört)
+    //    damit sie beim Gewinn deutlich zuverlässiger startet
+    try {
+      const prevMuted = bgm.muted;
+      const prevVol = bgm.volume;
+
+      bgm.muted = true;
+      bgm.volume = 0;
+
+      await bgm.play();
+      bgm.pause();
+      bgm.currentTime = 0;
+
+      bgm.muted = prevMuted;
+      bgm.volume = prevVol;
+    } catch(e) {}
+
+    audioUnlocked = true;
+
+    // UI: enable buttons + update overlay text
+    startBtn.disabled = false;
+    howBtn.disabled = false;
+    soundGate.classList.remove("show");
+    pressText.textContent = "PRESS START";
+  }
+
+  /* ====== Puzzle-Background-Music (60 BPM) ====== */
   function playNote(when, freq, dur, type, vol){
     if (!musicEnabled) return;
 
@@ -463,7 +498,6 @@
   function playHat(when, dur = 0.02, vol = 0.03){
     if (!musicEnabled) return;
 
-    // Create a short noise buffer
     const bufferSize = Math.floor(audioCtx.sampleRate * dur);
     const buffer = audioCtx.createBuffer(1, bufferSize, audioCtx.sampleRate);
     const data = buffer.getChannelData(0);
@@ -498,14 +532,11 @@
     puzzleMusicStep = 0;
     puzzleMusicStartT = audioCtx.currentTime + 0.03;
 
-    // 60 BPM, 16 steps = 1 bar of 4/4 with 16th notes  ✅ (nur diese Änderung!)
     const bpm = 60;
-    const stepDur = (60 / bpm) / 4; // 16th note duration
-    const lookahead = 0.12;         // schedule ahead seconds
+    const stepDur = (60 / bpm) / 4;
+    const lookahead = 0.12;
     const intervalMs = 25;
 
-    // Patterns (16 steps)
-    // Scale: C major-ish (puzzle-friendly)
     const lead = [ 523.25, 659.25, 783.99, 659.25, 587.33, 659.25, 783.99, 659.25,
                    523.25, 587.33, 659.25, 587.33, 493.88, 587.33, 659.25, 587.33 ];
     const bass = [ 130.81, 0, 130.81, 0, 146.83, 0, 146.83, 0,
@@ -520,15 +551,11 @@
         const t = puzzleMusicStartT + puzzleMusicStep * stepDur;
         const i = puzzleMusicStep % 16;
 
-        // lead: short, plucky square
-        const lf = lead[i];
-        playNote(t, lf, stepDur * 0.85, "square", 0.045);
+        playNote(t, lead[i], stepDur * 0.85, "square", 0.045);
 
-        // bass: triangle-ish (sine works too; triangle is fine here)
         const bf = bass[i];
         if (bf > 0) playNote(t, bf, stepDur * 1.8, "triangle", 0.032);
 
-        // hats: tiny noise
         if (hats[i]) playHat(t, 0.018, 0.020);
 
         puzzleMusicStep++;
@@ -550,8 +577,8 @@
   /* ====== WIN MP3 (robust iOS) ====== */
   async function startWinMp3(){
     try{
-      // Ensure unlocked/primed right before play
-      await unlockIOSAudio();
+      ensureAudio();
+      try { await audioCtx.resume(); } catch(e) {}
 
       bgm.pause();
       bgm.currentTime = 0;
@@ -559,13 +586,12 @@
       bgm.muted = false;
       bgm.volume = 0.5;
 
-      // Helps on some iOS cases
       bgm.load();
 
       const p = bgm.play();
       if (p && typeof p.then === "function") await p;
     } catch(e){
-      // ignore here; fallback tap handler will try again
+      // if blocked, fallback tap will start it
     }
   }
 
@@ -607,7 +633,6 @@
   function onTileClick(tile){
     if (gameWon) return;
 
-    // user gesture => allow audio
     ensureAudio();
 
     // During game: puzzle music (NOT musik.mp3)
@@ -648,6 +673,18 @@
     b.dataset.current = tmpCur;
   }
 
+  function armWinTapFallbackOnce(){
+    if (winTapFallbackArmed) return;
+    winTapFallbackArmed = true;
+
+    document.addEventListener("pointerdown", async function afterWinTap(){
+      // only meaningful if still won and mp3 not playing
+      document.removeEventListener("pointerdown", afterWinTap);
+      winTapFallbackArmed = false;
+      await startWinMp3();
+    }, { once: true });
+  }
+
   function checkWin(){
     const all = document.querySelectorAll(".tile");
     let win = true;
@@ -660,7 +697,6 @@
       gameWon = true;
       winBox.style.display = "block";
 
-      // Stop puzzle chiptune, play win jingle, then start musik.mp3
       stopPuzzleMusic();
       winJingle();
       shake(180);
@@ -669,11 +705,7 @@
         startWinMp3();
       }, 450);
 
-      // Fallback: if iOS blocks, first tap after win will start it
-      document.addEventListener("pointerdown", async function afterWinTap(){
-        document.removeEventListener("pointerdown", afterWinTap);
-        await startWinMp3();
-      }, { once: true });
+      armWinTapFallbackOnce();
     }
   }
 
@@ -704,25 +736,35 @@
     });
 
     selected = null;
-
-    // Trigger same win behavior
     checkWin();
   }
 
   /* ====== UI ====== */
 
-  // Unlock audio on first tap anywhere on overlay (iOS-friendly)
-  overlay.addEventListener("pointerdown", async () => {
-    await unlockIOSAudio();
+  // PERFECT iOS-like: first tap anywhere on overlay enables audio
+  // Use capture so it works even if user taps inside the card/buttons.
+  overlay.addEventListener("click", async (e) => {
+    if (!audioUnlocked){
+      await unlockIOSAudioPerfect();
+
+      // Start puzzle music immediately after unlock (feels "automatic")
+      if (musicEnabled && !puzzleMusicPlaying) startPuzzleMusic();
+
+      // Optional: haptic feedback where supported (iOS Safari doesn't always support)
+      if (navigator.vibrate) navigator.vibrate(15);
+
+      // Prevent accidental immediate "Start" click while unlocking
+      e.preventDefault();
+      e.stopPropagation();
+      return;
+    }
+  }, { capture: true });
+
+  // Start button: now only starts game; audio already unlocked
+  startBtn.addEventListener("click", () => {
+    ensureAudio();
+
     if (musicEnabled && !puzzleMusicPlaying) startPuzzleMusic();
-  }, { once: true });
-
-  // Start button unlocks iOS audio reliably before starting music
-  startBtn.addEventListener("click", async () => {
-    await unlockIOSAudio();
-
-    // Start playing puzzle music right away on start
-    if (musicEnabled) startPuzzleMusic();
     overlay.classList.add("hidden");
     stopWinMp3();
     buildBoard();
@@ -739,7 +781,6 @@
     ensureAudio();
     clickSfx();
     stopWinMp3();
-    // If user shuffles mid-game, keep puzzle music
     if (musicEnabled) startPuzzleMusic();
     buildBoard();
     shake(140);
@@ -755,7 +796,6 @@
     ensureAudio();
     sfxEnabled = !sfxEnabled;
     sfxBtn.textContent = sfxEnabled ? "SFX: An" : "SFX: Aus";
-    // tiny feedback only if enabled
     if (sfxEnabled) clickSfx();
   });
 
@@ -768,7 +808,6 @@
       stopPuzzleMusic();
       stopWinMp3();
     } else {
-      // if already playing (in game), restart puzzle music; if won, keep mp3 off unless won again
       if (overlay.classList.contains("hidden") && !gameWon){
         startPuzzleMusic();
       }
@@ -777,13 +816,12 @@
   });
 
   window.addEventListener("resize", () => {
-    // Rebuild board on resize during gameplay (simple solution)
     if (overlay.classList.contains("hidden") && grid.children.length && !gameWon){
       buildBoard();
     }
   });
 
-  // Initial state: startscreen active, no music yet
+  // Initial state: startscreen active, no music yet, buttons disabled (iOS-like)
   stopPuzzleMusic();
   stopWinMp3();
 </script>
