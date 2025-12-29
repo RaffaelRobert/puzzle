@@ -129,6 +129,7 @@
     display:none;
     font-size: 18px;
     margin: 10px 0 10px;
+    text-align:center;
   }
   .win a{
     color: var(--accent);
@@ -275,7 +276,7 @@
   </div>
 
   <!-- Diese Datei soll ERST BEI GEWINN starten -->
-  <audio id="bgm" src="musik.mp3" loop></audio>
+  <audio id="bgm" src="musik.mp3" loop preload="auto" playsinline></audio>
 
 <script>
   const SIZE = 6;
@@ -340,6 +341,47 @@
       masterGain.connect(audioCtx.destination);
     }
     if (audioCtx.state === "suspended") audioCtx.resume().catch(()=>{});
+  }
+
+  /* ====== iOS Audio Unlock Improvements (new) ====== */
+  async function unlockIOSAudio(){
+    ensureAudio();
+
+    // 1) AudioContext zuverlässig aktivieren
+    try { await audioCtx.resume(); } catch(e) {}
+
+    // 2) Ultra-leiser kurzer Ping
+    try {
+      const t0 = audioCtx.currentTime;
+      const osc = audioCtx.createOscillator();
+      const g = audioCtx.createGain();
+      osc.type = "square";
+      osc.frequency.setValueAtTime(440, t0);
+      g.gain.setValueAtTime(0.0001, t0);
+      g.gain.exponentialRampToValueAtTime(0.00001, t0 + 0.02);
+      osc.connect(g);
+      g.connect(audioCtx.destination);
+      osc.start(t0);
+      osc.stop(t0 + 0.02);
+    } catch(e) {}
+
+    // 3) MP3 "primen": einmal stumm play() -> pause()
+    try {
+      const prevMuted = bgm.muted;
+      const prevVol = bgm.volume;
+
+      bgm.muted = true;
+      bgm.volume = 0;
+
+      await bgm.play();
+      bgm.pause();
+      bgm.currentTime = 0;
+
+      bgm.muted = prevMuted;
+      bgm.volume = prevVol;
+    } catch(e) {
+      // Wenn iOS es trotzdem blockt, versuchen wir es beim nächsten Tap erneut.
+    }
   }
 
   function shake(ms = 120){
@@ -456,7 +498,7 @@
     puzzleMusicStep = 0;
     puzzleMusicStartT = audioCtx.currentTime + 0.03;
 
-    // 60 BPM, 16 steps = 1 bar of 4/4 with 16th notes
+    // 60 BPM, 16 steps = 1 bar of 4/4 with 16th notes  ✅ (nur diese Änderung!)
     const bpm = 60;
     const stepDur = (60 / bpm) / 4; // 16th note duration
     const lookahead = 0.12;         // schedule ahead seconds
@@ -505,10 +547,26 @@
     }
   }
 
-  function startWinMp3(){
-    // Starts ONLY at win (after user gesture already happened)
-    bgm.currentTime = 0;
-    bgm.play().catch(()=>{});
+  /* ====== WIN MP3 (robust iOS) ====== */
+  async function startWinMp3(){
+    try{
+      // Ensure unlocked/primed right before play
+      await unlockIOSAudio();
+
+      bgm.pause();
+      bgm.currentTime = 0;
+
+      bgm.muted = false;
+      bgm.volume = 0.5;
+
+      // Helps on some iOS cases
+      bgm.load();
+
+      const p = bgm.play();
+      if (p && typeof p.then === "function") await p;
+    } catch(e){
+      // ignore here; fallback tap handler will try again
+    }
   }
 
   function stopWinMp3(){
@@ -608,9 +666,14 @@
       shake(180);
 
       setTimeout(() => {
-        // Now start the user's track only at the end
         startWinMp3();
       }, 450);
+
+      // Fallback: if iOS blocks, first tap after win will start it
+      document.addEventListener("pointerdown", async function afterWinTap(){
+        document.removeEventListener("pointerdown", afterWinTap);
+        await startWinMp3();
+      }, { once: true });
     }
   }
 
@@ -621,7 +684,7 @@
     }
   }
 
-  /* ====== SOLVE BUTTON (new) ====== */
+  /* ====== SOLVE BUTTON ====== */
   function solvePuzzleInstantly(){
     if (gameWon) return;
 
@@ -647,8 +710,17 @@
   }
 
   /* ====== UI ====== */
-  startBtn.addEventListener("click", () => {
-    ensureAudio();
+
+  // Unlock audio on first tap anywhere on overlay (iOS-friendly)
+  overlay.addEventListener("pointerdown", async () => {
+    await unlockIOSAudio();
+    if (musicEnabled && !puzzleMusicPlaying) startPuzzleMusic();
+  }, { once: true });
+
+  // Start button unlocks iOS audio reliably before starting music
+  startBtn.addEventListener("click", async () => {
+    await unlockIOSAudio();
+
     // Start playing puzzle music right away on start
     if (musicEnabled) startPuzzleMusic();
     overlay.classList.add("hidden");
@@ -674,7 +746,6 @@
   });
 
   solveBtn.addEventListener("click", () => {
-    // optional little feedback
     clickSfx();
     shake(120);
     solvePuzzleInstantly();
