@@ -5,6 +5,10 @@
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>Bild Puzzle</title>
 
+<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
+<meta http-equiv="Pragma" content="no-cache" />
+<meta http-equiv="Expires" content="0" />
+
 <style>
   :root{
     --bg:#0b0b0b;
@@ -300,11 +304,16 @@
   </div>
 
   <!-- Diese Datei soll ERST BEI GEWINN starten -->
-  <audio id="bgm" src="musik.mp3" loop preload="auto" playsinline></audio>
+  <audio id="bgm" loop preload="auto" playsinline></audio>
 
 <script>
+  // ===== AUTO CACHE BUSTING =====
+  // Jede Seite bekommt automatisch eine neue Version => keine alten Caches mehr.
+  const CACHE_BUST = Date.now().toString();
+
   const SIZE = 6;
-  const IMAGE_SRC = "bild.png";
+  const IMAGE_SRC = "bild.png?v=" + CACHE_BUST;
+  const MP3_SRC   = "musik.mp3?v=" + CACHE_BUST;
 
   const grid = document.getElementById("grid");
   const winBox = document.getElementById("win");
@@ -324,13 +333,14 @@
   const soundGate = document.getElementById("soundGate");
   const pressText = document.getElementById("pressText");
 
-  // Tile size derived from CSS var --tile (responsive)
+  // Set MP3 src with cache-bust (BUT DO NOT PLAY UNTIL WIN)
+  bgm.src = MP3_SRC;
+  bgm.volume = 0.5;
+
   function getTileSizePx(){
     const v = getComputedStyle(document.documentElement).getPropertyValue("--tile").trim();
     return parseInt(v.replace("px",""), 10);
   }
-
-  bgm.volume = 0.5;
 
   let tiles = [];
   let selected = null;
@@ -352,9 +362,8 @@
   let musicGain = null;
   let sfxGain = null;
 
-  // iOS-like gating
+  // iOS gating
   let audioUnlocked = false;
-  let mp3Primed = false;
   let winTapFallbackArmed = false;
 
   function ensureAudio(){
@@ -372,8 +381,7 @@
       sfxGain.connect(masterGain);
       masterGain.connect(audioCtx.destination);
     }
-    // NICHT awaiten (iOS-gesture-sicherer)
-    if (audioCtx.state === "suspended") {
+    if (audioCtx.state === "suspended"){
       try { audioCtx.resume(); } catch(e) {}
     }
   }
@@ -385,7 +393,7 @@
     setTimeout(()=> screen.classList.remove("shake"), ms);
   }
 
-  /* ====== SFX (GameBoy-ish) ====== */
+  /* ====== SFX ====== */
   function playBeep(freq, duration = 0.06, type = "square", vol = 0.14){
     if (!sfxEnabled) return;
     ensureAudio();
@@ -431,65 +439,30 @@
     }
   }
 
-  /* ====== PERFECT iOS-LIKE AUDIO UNLOCK (NO AWAIT) ====== */
-  function gestureUnlockAndMaybeStartMusic(startMusic = false){
-    if (audioUnlocked) {
-      if (startMusic && musicEnabled && !puzzleMusicPlaying) startPuzzleMusic();
+  /* ====== iOS unlock: ONLY puzzle music, NEVER mp3 ====== */
+  function unlockAudioAndStartPuzzleMusic(){
+    if (audioUnlocked){
+      if (musicEnabled && !puzzleMusicPlaying) startPuzzleMusic();
       return;
     }
 
     ensureAudio();
 
-    // Audible "unlock" beep right inside the gesture
     playBeep(880, 0.05, "square", 0.08);
     setTimeout(()=> playBeep(1175, 0.05, "square", 0.06), 70);
 
-    // Prime MP3 once (no await!)
-    if (!mp3Primed){
-      mp3Primed = true;
-      try{
-        const prevMuted = bgm.muted;
-        const prevVol = bgm.volume;
-
-        bgm.muted = true;
-        bgm.volume = 0;
-
-        const p = bgm.play();
-        if (p && typeof p.then === "function"){
-          p.then(()=>{
-            bgm.pause();
-            bgm.currentTime = 0;
-            bgm.muted = prevMuted;
-            bgm.volume = prevVol;
-          }).catch(()=>{
-            bgm.muted = prevMuted;
-            bgm.volume = prevVol;
-          });
-        } else {
-          // Older behavior
-          bgm.pause();
-          bgm.currentTime = 0;
-          bgm.muted = prevMuted;
-          bgm.volume = prevVol;
-        }
-      } catch(e){}
-    }
-
     audioUnlocked = true;
 
-    // UI enable
     startBtn.disabled = false;
     howBtn.disabled = false;
     soundGate.classList.remove("show");
     pressText.textContent = "PRESS START";
 
-    if (startMusic && musicEnabled && !puzzleMusicPlaying) startPuzzleMusic();
-
-    // Optional haptic
+    if (musicEnabled && !puzzleMusicPlaying) startPuzzleMusic();
     if (navigator.vibrate) navigator.vibrate(15);
   }
 
-  /* ====== Puzzle-Background-Music (60 BPM) ====== */
+  /* ====== Puzzle Music (60 BPM) ====== */
   function playNote(when, freq, dur, type, vol){
     if (!musicEnabled) return;
 
@@ -546,7 +519,6 @@
     puzzleMusicStep = 0;
     puzzleMusicStartT = audioCtx.currentTime + 0.03;
 
-    // 60 BPM
     const bpm = 60;
     const stepDur = (60 / bpm) / 4;
     const lookahead = 0.12;
@@ -567,8 +539,7 @@
         const i = puzzleMusicStep % 16;
 
         playNote(t, lead[i], stepDur * 0.85, "square", 0.045);
-        const bf = bass[i];
-        if (bf > 0) playNote(t, bf, stepDur * 1.8, "triangle", 0.032);
+        if (bass[i] > 0) playNote(t, bass[i], stepDur * 1.8, "triangle", 0.032);
         if (hats[i]) playHat(t, 0.018, 0.020);
 
         puzzleMusicStep++;
@@ -587,29 +558,40 @@
     }
   }
 
-  /* ====== WIN MP3 (robust iOS) ====== */
+  /* ====== WIN MP3 (only at win) ====== */
   async function startWinMp3(){
     try{
       ensureAudio();
 
       bgm.pause();
       bgm.currentTime = 0;
-
       bgm.muted = false;
       bgm.volume = 0.5;
-
       bgm.load();
 
       const p = bgm.play();
       if (p && typeof p.then === "function") await p;
     } catch(e){
-      // fallback will handle
+      // fallback on next tap
     }
   }
 
   function stopWinMp3(){
     bgm.pause();
     bgm.currentTime = 0;
+  }
+
+  function armWinTapFallbackOnce(){
+    if (winTapFallbackArmed) return;
+    winTapFallbackArmed = true;
+
+    const handler = async () => {
+      winTapFallbackArmed = false;
+      await startWinMp3();
+    };
+
+    window.addEventListener("touchstart", handler, { once:true, passive:true });
+    window.addEventListener("mousedown", handler, { once:true });
   }
 
   /* ====== Game logic ====== */
@@ -645,9 +627,7 @@
   function onTileClick(tile){
     if (gameWon) return;
 
-    // IMPORTANT: do unlock/start music right inside the gesture
-    gestureUnlockAndMaybeStartMusic(true);
-
+    unlockAudioAndStartPuzzleMusic();
     clickSfx();
 
     if (!selected){
@@ -683,21 +663,6 @@
     b.dataset.current = tmpCur;
   }
 
-  function armWinTapFallbackOnce(){
-    if (winTapFallbackArmed) return;
-    winTapFallbackArmed = true;
-
-    const handler = async () => {
-      winTapFallbackArmed = false;
-      // ensure unlocked in case user somehow got here without it
-      gestureUnlockAndMaybeStartMusic(false);
-      await startWinMp3();
-    };
-
-    window.addEventListener("touchstart", handler, { once:true, passive:true });
-    window.addEventListener("mousedown", handler, { once:true });
-  }
-
   function checkWin(){
     const all = document.querySelectorAll(".tile");
     let win = true;
@@ -729,21 +694,19 @@
     }
   }
 
-  /* ====== SOLVE BUTTON ====== */
   function solvePuzzleInstantly(){
     if (gameWon) return;
 
-    gestureUnlockAndMaybeStartMusic(true);
+    unlockAudioAndStartPuzzleMusic();
 
     const TILE = getTileSizePx();
     const all = document.querySelectorAll(".tile");
 
     all.forEach((tile, index) => {
-      const correctPos = index;
-      const x = correctPos % SIZE;
-      const y = Math.floor(correctPos / SIZE);
+      const x = index % SIZE;
+      const y = Math.floor(index / SIZE);
 
-      tile.dataset.current = correctPos.toString();
+      tile.dataset.current = index.toString();
       tile.style.backgroundPosition = `-${x * TILE}px -${y * TILE}px`;
       tile.classList.remove("selected");
     });
@@ -753,12 +716,9 @@
   }
 
   /* ====== UI ====== */
-
-  // Perfect iOS-like: unlock on FIRST touchstart/mousedown/click anywhere on overlay
   function overlayUnlockHandler(e){
     if (!audioUnlocked){
-      gestureUnlockAndMaybeStartMusic(true);
-      // prevent "ghost click" from instantly hitting Start on first tap
+      unlockAudioAndStartPuzzleMusic();
       e.preventDefault?.();
       e.stopPropagation?.();
     }
@@ -769,7 +729,7 @@
   overlay.addEventListener("click", overlayUnlockHandler, { capture:true, once:true });
 
   startBtn.addEventListener("click", () => {
-    gestureUnlockAndMaybeStartMusic(true);
+    unlockAudioAndStartPuzzleMusic();
     overlay.classList.add("hidden");
     stopWinMp3();
     buildBoard();
@@ -777,13 +737,13 @@
   });
 
   howBtn.addEventListener("click", () => {
-    gestureUnlockAndMaybeStartMusic(false);
+    unlockAudioAndStartPuzzleMusic();
     clickSfx();
     howText.style.display = (howText.style.display === "none") ? "block" : "none";
   });
 
   shuffleBtn.addEventListener("click", () => {
-    gestureUnlockAndMaybeStartMusic(true);
+    unlockAudioAndStartPuzzleMusic();
     clickSfx();
     stopWinMp3();
     if (musicEnabled) startPuzzleMusic();
@@ -792,21 +752,21 @@
   });
 
   solveBtn.addEventListener("click", () => {
-    gestureUnlockAndMaybeStartMusic(true);
+    unlockAudioAndStartPuzzleMusic();
     clickSfx();
     shake(120);
     solvePuzzleInstantly();
   });
 
   sfxBtn.addEventListener("click", () => {
-    gestureUnlockAndMaybeStartMusic(false);
+    unlockAudioAndStartPuzzleMusic();
     sfxEnabled = !sfxEnabled;
     sfxBtn.textContent = sfxEnabled ? "SFX: An" : "SFX: Aus";
     if (sfxEnabled) clickSfx();
   });
 
   musicBtn.addEventListener("click", () => {
-    gestureUnlockAndMaybeStartMusic(false);
+    unlockAudioAndStartPuzzleMusic();
     musicEnabled = !musicEnabled;
     musicBtn.textContent = musicEnabled ? "Musik: An" : "Musik: Aus";
 
@@ -827,7 +787,6 @@
     }
   });
 
-  // Initial state: startscreen active, no music yet
   stopPuzzleMusic();
   stopWinMp3();
 </script>
