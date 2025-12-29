@@ -190,7 +190,6 @@
                 rgba(10,10,10,.85);
     border: 1px solid rgba(255,255,255,.10);
     box-shadow: 0 20px 60px rgba(0,0,0,.6);
-    position:relative;
   }
 
   .logo{
@@ -203,12 +202,12 @@
   .sub{
     opacity:.8;
     font-size: 13px;
-    margin-bottom: 12px;
+    margin-bottom: 14px;
   }
 
   .press{
     display:inline-block;
-    margin: 10px 0 10px;
+    margin: 10px 0 14px;
     padding: 8px 12px;
     border-radius: 999px;
     border: 1px dashed rgba(255,255,255,.20);
@@ -219,6 +218,19 @@
     0%, 49% { opacity: .15; }
     50%, 100% { opacity: .95; }
   }
+
+  .soundgate{
+    margin-top: 10px;
+    font-size: 12px;
+    opacity:.85;
+    padding: 10px 12px;
+    border-radius: 12px;
+    border: 1px solid rgba(0,255,153,.25);
+    background: rgba(0,255,153,.08);
+    display:none;
+  }
+  .soundgate.show{ display:block; }
+  .soundgate strong{ font-weight:900; }
 
   .start-actions{
     display:flex;
@@ -232,20 +244,6 @@
     background: rgba(0,255,153,.10);
   }
   .primary:hover{ background: rgba(0,255,153,.14); }
-
-  /* iOS-like "Tap to enable sound" banner */
-  .soundgate{
-    display:none;
-    margin-top: 12px;
-    padding: 10px 12px;
-    border-radius: 12px;
-    border: 1px solid rgba(0,255,153,.25);
-    background: rgba(0,255,153,.08);
-    font-size: 12px;
-    line-height: 1.35;
-  }
-  .soundgate strong{ font-weight:900; }
-  .soundgate.show{ display:block; }
 
   @media (max-width: 680px){
     :root{ --tile: 52px; --gap: 3px; }
@@ -292,8 +290,7 @@
             </div>
 
             <div class="soundgate show" id="soundGate">
-              <strong>iPhone/iPad Hinweis:</strong><br/>
-              Tippe einmal irgendwo, um Ton zu aktivieren.
+              <strong>iPhone/iPad:</strong> Tippe einmal irgendwo, um Ton zu aktivieren.
             </div>
           </div>
         </div>
@@ -357,6 +354,7 @@
 
   // iOS-like gating
   let audioUnlocked = false;
+  let mp3Primed = false;
   let winTapFallbackArmed = false;
 
   function ensureAudio(){
@@ -374,7 +372,10 @@
       sfxGain.connect(masterGain);
       masterGain.connect(audioCtx.destination);
     }
-    if (audioCtx.state === "suspended") audioCtx.resume().catch(()=>{});
+    // NICHT awaiten (iOS-gesture-sicherer)
+    if (audioCtx.state === "suspended") {
+      try { audioCtx.resume(); } catch(e) {}
+    }
   }
 
   function shake(ms = 120){
@@ -430,48 +431,62 @@
     }
   }
 
-  /* ====== iOS Audio Unlock (perfect iOS-like) ======
-     - first tap anywhere on overlay enables audio and starts puzzle music
-     - Start/How buttons disabled until audio unlocked
-     - audible "unlock beep" so users immediately know sound is on
-     - mp3 primed for later play on win
-  */
-  async function unlockIOSAudioPerfect(){
+  /* ====== PERFECT iOS-LIKE AUDIO UNLOCK (NO AWAIT) ====== */
+  function gestureUnlockAndMaybeStartMusic(startMusic = false){
+    if (audioUnlocked) {
+      if (startMusic && musicEnabled && !puzzleMusicPlaying) startPuzzleMusic();
+      return;
+    }
+
     ensureAudio();
 
-    // 1) AudioContext zuverlässig aktivieren
-    try { await audioCtx.resume(); } catch(e) {}
+    // Audible "unlock" beep right inside the gesture
+    playBeep(880, 0.05, "square", 0.08);
+    setTimeout(()=> playBeep(1175, 0.05, "square", 0.06), 70);
 
-    // 2) Audible unlock beep (leise, aber hörbar)
-    try {
-      playBeep(880, 0.05, "square", 0.08);
-      setTimeout(()=> playBeep(1175, 0.05, "square", 0.06), 70);
-    } catch(e) {}
+    // Prime MP3 once (no await!)
+    if (!mp3Primed){
+      mp3Primed = true;
+      try{
+        const prevMuted = bgm.muted;
+        const prevVol = bgm.volume;
 
-    // 3) MP3 "primen": einmal kurz play() -> pause() (stumm, damit man nichts hört)
-    //    damit sie beim Gewinn deutlich zuverlässiger startet
-    try {
-      const prevMuted = bgm.muted;
-      const prevVol = bgm.volume;
+        bgm.muted = true;
+        bgm.volume = 0;
 
-      bgm.muted = true;
-      bgm.volume = 0;
-
-      await bgm.play();
-      bgm.pause();
-      bgm.currentTime = 0;
-
-      bgm.muted = prevMuted;
-      bgm.volume = prevVol;
-    } catch(e) {}
+        const p = bgm.play();
+        if (p && typeof p.then === "function"){
+          p.then(()=>{
+            bgm.pause();
+            bgm.currentTime = 0;
+            bgm.muted = prevMuted;
+            bgm.volume = prevVol;
+          }).catch(()=>{
+            bgm.muted = prevMuted;
+            bgm.volume = prevVol;
+          });
+        } else {
+          // Older behavior
+          bgm.pause();
+          bgm.currentTime = 0;
+          bgm.muted = prevMuted;
+          bgm.volume = prevVol;
+        }
+      } catch(e){}
+    }
 
     audioUnlocked = true;
 
-    // UI: enable buttons + update overlay text
+    // UI enable
     startBtn.disabled = false;
     howBtn.disabled = false;
     soundGate.classList.remove("show");
     pressText.textContent = "PRESS START";
+
+    if (startMusic && musicEnabled && !puzzleMusicPlaying) startPuzzleMusic();
+
+    // Optional haptic
+    if (navigator.vibrate) navigator.vibrate(15);
   }
 
   /* ====== Puzzle-Background-Music (60 BPM) ====== */
@@ -494,7 +509,6 @@
     osc.stop(when + dur);
   }
 
-  // Short noise burst (hi-hat)
   function playHat(when, dur = 0.02, vol = 0.03){
     if (!musicEnabled) return;
 
@@ -532,6 +546,7 @@
     puzzleMusicStep = 0;
     puzzleMusicStartT = audioCtx.currentTime + 0.03;
 
+    // 60 BPM
     const bpm = 60;
     const stepDur = (60 / bpm) / 4;
     const lookahead = 0.12;
@@ -552,10 +567,8 @@
         const i = puzzleMusicStep % 16;
 
         playNote(t, lead[i], stepDur * 0.85, "square", 0.045);
-
         const bf = bass[i];
         if (bf > 0) playNote(t, bf, stepDur * 1.8, "triangle", 0.032);
-
         if (hats[i]) playHat(t, 0.018, 0.020);
 
         puzzleMusicStep++;
@@ -578,7 +591,6 @@
   async function startWinMp3(){
     try{
       ensureAudio();
-      try { await audioCtx.resume(); } catch(e) {}
 
       bgm.pause();
       bgm.currentTime = 0;
@@ -591,7 +603,7 @@
       const p = bgm.play();
       if (p && typeof p.then === "function") await p;
     } catch(e){
-      // if blocked, fallback tap will start it
+      // fallback will handle
     }
   }
 
@@ -633,10 +645,8 @@
   function onTileClick(tile){
     if (gameWon) return;
 
-    ensureAudio();
-
-    // During game: puzzle music (NOT musik.mp3)
-    if (!puzzleMusicPlaying) startPuzzleMusic();
+    // IMPORTANT: do unlock/start music right inside the gesture
+    gestureUnlockAndMaybeStartMusic(true);
 
     clickSfx();
 
@@ -677,12 +687,15 @@
     if (winTapFallbackArmed) return;
     winTapFallbackArmed = true;
 
-    document.addEventListener("pointerdown", async function afterWinTap(){
-      // only meaningful if still won and mp3 not playing
-      document.removeEventListener("pointerdown", afterWinTap);
+    const handler = async () => {
       winTapFallbackArmed = false;
+      // ensure unlocked in case user somehow got here without it
+      gestureUnlockAndMaybeStartMusic(false);
       await startWinMp3();
-    }, { once: true });
+    };
+
+    window.addEventListener("touchstart", handler, { once:true, passive:true });
+    window.addEventListener("mousedown", handler, { once:true });
   }
 
   function checkWin(){
@@ -720,7 +733,7 @@
   function solvePuzzleInstantly(){
     if (gameWon) return;
 
-    ensureAudio();
+    gestureUnlockAndMaybeStartMusic(true);
 
     const TILE = getTileSizePx();
     const all = document.querySelectorAll(".tile");
@@ -741,30 +754,22 @@
 
   /* ====== UI ====== */
 
-  // PERFECT iOS-like: first tap anywhere on overlay enables audio
-  // Use capture so it works even if user taps inside the card/buttons.
-  overlay.addEventListener("click", async (e) => {
+  // Perfect iOS-like: unlock on FIRST touchstart/mousedown/click anywhere on overlay
+  function overlayUnlockHandler(e){
     if (!audioUnlocked){
-      await unlockIOSAudioPerfect();
-
-      // Start puzzle music immediately after unlock (feels "automatic")
-      if (musicEnabled && !puzzleMusicPlaying) startPuzzleMusic();
-
-      // Optional: haptic feedback where supported (iOS Safari doesn't always support)
-      if (navigator.vibrate) navigator.vibrate(15);
-
-      // Prevent accidental immediate "Start" click while unlocking
-      e.preventDefault();
-      e.stopPropagation();
-      return;
+      gestureUnlockAndMaybeStartMusic(true);
+      // prevent "ghost click" from instantly hitting Start on first tap
+      e.preventDefault?.();
+      e.stopPropagation?.();
     }
-  }, { capture: true });
+  }
 
-  // Start button: now only starts game; audio already unlocked
+  overlay.addEventListener("touchstart", overlayUnlockHandler, { capture:true, passive:false, once:true });
+  overlay.addEventListener("mousedown", overlayUnlockHandler, { capture:true, once:true });
+  overlay.addEventListener("click", overlayUnlockHandler, { capture:true, once:true });
+
   startBtn.addEventListener("click", () => {
-    ensureAudio();
-
-    if (musicEnabled && !puzzleMusicPlaying) startPuzzleMusic();
+    gestureUnlockAndMaybeStartMusic(true);
     overlay.classList.add("hidden");
     stopWinMp3();
     buildBoard();
@@ -772,13 +777,13 @@
   });
 
   howBtn.addEventListener("click", () => {
-    ensureAudio();
+    gestureUnlockAndMaybeStartMusic(false);
     clickSfx();
     howText.style.display = (howText.style.display === "none") ? "block" : "none";
   });
 
   shuffleBtn.addEventListener("click", () => {
-    ensureAudio();
+    gestureUnlockAndMaybeStartMusic(true);
     clickSfx();
     stopWinMp3();
     if (musicEnabled) startPuzzleMusic();
@@ -787,20 +792,21 @@
   });
 
   solveBtn.addEventListener("click", () => {
+    gestureUnlockAndMaybeStartMusic(true);
     clickSfx();
     shake(120);
     solvePuzzleInstantly();
   });
 
   sfxBtn.addEventListener("click", () => {
-    ensureAudio();
+    gestureUnlockAndMaybeStartMusic(false);
     sfxEnabled = !sfxEnabled;
     sfxBtn.textContent = sfxEnabled ? "SFX: An" : "SFX: Aus";
     if (sfxEnabled) clickSfx();
   });
 
   musicBtn.addEventListener("click", () => {
-    ensureAudio();
+    gestureUnlockAndMaybeStartMusic(false);
     musicEnabled = !musicEnabled;
     musicBtn.textContent = musicEnabled ? "Musik: An" : "Musik: Aus";
 
@@ -821,7 +827,7 @@
     }
   });
 
-  // Initial state: startscreen active, no music yet, buttons disabled (iOS-like)
+  // Initial state: startscreen active, no music yet
   stopPuzzleMusic();
   stopWinMp3();
 </script>
